@@ -187,3 +187,15 @@ source .bashrc
 This error is usually caused by a container running an older version of glibc than your host system (where you compiled `dogi`).
 A possible cause of this is you didn't use `CGO_ENABLED=0` in the `go install`, as specified in #quickstart.
 
+
+## Roadmap
+
+Maybe add some options OR directly be a wrapper of x11docker? (github.com/mviereck/x11docker)
+
+## TODO Bug
+
+apt-cacher bug : due to docker version? 
+
+current version : Docker version 28.3.3, build 980b856
+
+other version (with apt-cacher) : Docker 29.3.3

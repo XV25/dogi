@@ -256,7 +256,6 @@ func setAptCacher() string {
 	{
 		logger.Printf("build apt cacher image: %s\n", imgName)
 		// build apt-cache-ng image
-		//dir, err := os.MkdirTemp("", "dogi_apt-cache")
 		dir, err := os.MkdirTemp(tempDirPtr, "dogi_apt-cache")
 		check(err)
 		defer os.RemoveAll(dir) // clean up
@@ -266,8 +265,11 @@ func setAptCacher() string {
 		logger.Printf("temp dir: %s\n", dir)
 		logger.Printf("temp Dockerfile: %s\n", tmpfn)
 
+		//cmd := exec.Command("docker",
+		//	"build", "--progress=plain", "-t", imgName, ".", "&>", "build.log")
 		cmd := exec.Command("docker",
-			"build", "--progress=plain", "-t", imgName, ".")
+			"build", "--file", "Dockerfile", "--progress=plain", "-t", imgName, ".")
+
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		if err != nil {
