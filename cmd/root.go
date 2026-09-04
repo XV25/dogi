@@ -117,12 +117,12 @@ var (
 	noRMPtr          bool
 	noUSBPtr         bool
 	noNethostPtr     bool
-	noCacherPtr      bool
-	noSetupSudoPtr   bool
-	pidIPCHostPtr    bool
+	disableCacherPtr bool
+	forceCacherPtr   bool
+	noPIDIPCHostPtr  bool
+	extraArgsPtr     string
 	workDirPtr       string
 	contNamePtr      string
-	othPtr           string
 	devAccPtr        string
 	devRMWPtr        string
 	tempDirPtr       string
@@ -192,7 +192,7 @@ Examples:
 
 func panicKey(key string, mapWithoutKey map[string]string) {
 	if _, ok := mapWithoutKey[key]; ok {
-		panic(fmt.Errorf("%s should not exist in this dictionary\n", key))
+		panic(fmt.Errorf("%s should not exist in this dictionary", key))
 	}
 }
 

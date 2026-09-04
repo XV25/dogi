@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"mvdan.cc/sh/v3/shell"
 	"os"
 	"os/exec"
 	"os/user"
@@ -132,6 +133,13 @@ type contState struct {
 	exists, running bool
 }
 
+func dockerImagefromLine(imgline string) (string, string) {
+	fields := strings.Fields(imgline)
+	imgtag := fields[0]
+	imghash := fields[1]
+	return imgtag, imghash
+}
+
 func imagesStartingWith(toComplete string) []string {
 	out, err := exec.Command("docker", "images").Output()
 	check(err)
@@ -139,12 +147,18 @@ func imagesStartingWith(toComplete string) []string {
 	imglines := strings.Split(
 		strings.TrimSpace(string(out[:])), "\n")
 	images := []string{}
-	for _, imgline := range imglines {
-		fields := strings.Fields(imgline)
-		imgtag := fields[0] + ":" + fields[1]
+
+	for _, imgline := range imglines[1:] {
+		imgtag, _ := dockerImagefromLine(imgline)
+
+		// add images by name:tag
 		if strings.HasPrefix(imgtag, toComplete) {
 			images = append(images, imgtag)
 		}
+		// ignore images by hash for now
+		// if strings.HasPrefix(imghash, toComplete) {
+		// 	images = append(images, imghash)
+		// }
 	}
 	return images
 }
@@ -172,7 +186,7 @@ func selectImage() string {
 		logger.Fatalf("select image failed")
 	}
 
-	imageId := strings.Fields(result)[2]
+	imageId, _ := dockerImagefromLine(result)
 
 	return imageId
 }
@@ -223,14 +237,14 @@ func imageDistro(imageName string) string {
 	out, err := exec.Command("docker", "run", "--rm", "--tty",
 		"--entrypoint=cat",
 		imageName, "/etc/os-release").Output()
-	// Debug for barebone images, where image distro could not
-	// even be checked
 	if err != nil {
-		logger.Printf("Error : could not check image distro. Recorded error : ")
-		logger.Println(err.Error())
-		logger.Fatalf("We'll assume the image is too basic for dogi. Exiting...")
+		logger.Println("Error: failed to verify image distro:")
+		logger.Printf("image: %s\n", imageName)
+		logger.Printf("error: %s\n", err.Error())
+		logger.Printf("Please share this log the %s devs at:\n", appname)
+		logger.Fatalf("https://github.com/ntorresalberto/dogi/issues/new")
 	}
-	//check(err)
+	check(err)
 
 	for _, val := range supportedDistros() {
 		if strings.Contains(string(out), val) {
@@ -258,21 +272,33 @@ func setAptCacher() string {
 		// build apt-cache-ng image
 		//dir, err := os.MkdirTemp("", "dogi_apt-cache")
 		dir, err := os.MkdirTemp(tempDirPtr, "dogi_apt-cache")
-		check(err)
-		defer os.RemoveAll(dir) // clean up
+		if err != nil {
+			return "" // dogi may work without apt-cacher
+		}
 
-		tmpfn := filepath.Join(dir, "Dockerfile")
-		check(os.WriteFile(tmpfn, []byte(assets.AptCacheDockerfile), 0666))
+		defer func() {
+			_ = os.RemoveAll(dir) // clean up
+		}()
+
+		tmpfn := filepath.Join(dir, "Dockerfilee")
+		err = os.WriteFile(tmpfn, []byte(assets.AptCacheDockerfile), 0666)
+		if err != nil {
+			return "" // dogi may work without apt-cacher
+		}
+
 		logger.Printf("temp dir: %s\n", dir)
 		logger.Printf("temp Dockerfile: %s\n", tmpfn)
 
+		//cmd := exec.Command("docker",
+		//	"build", "--progress=plain", "-t", imgName, ".", "&>", "build.log")
 		cmd := exec.Command("docker",
-			"build", "--progress=plain", "-t", imgName, ".")
+			"build", "--file", "Dockerfile", "--progress=plain", "-t", imgName, ".")
+
 		cmd.Dir = dir
-		out, err := cmd.Output()
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Println(string(out))
-			panic(err)
+			return "" // dogi may work without apt-cacher
 		}
 	}
 
@@ -285,12 +311,18 @@ func setAptCacher() string {
 		// check container image is up to date
 		out, err := exec.Command("docker", "image",
 			"inspect", "-f", "{{ .Id }}", imgName).Output()
-		check(err)
+		if err != nil {
+			return "" // dogi may work without apt-cacher
+		}
+
 		imageId := strings.TrimSpace(string(out[:]))
 
 		out, err = exec.Command("docker", "container",
 			"inspect", "-f", "{{ .Image }}", contName).Output()
-		check(err)
+		if err != nil {
+			return "" // dogi may work without apt-cacher
+		}
+
 		contImageId := strings.TrimSpace(string(out[:]))
 
 		if imageId != contImageId {
@@ -308,20 +340,29 @@ func setAptCacher() string {
 			logger.Printf("container running, stopping...")
 			_, err := exec.Command("docker", "container",
 				"stop", contName).Output()
-			check(err)
+			if err != nil {
+				return "" // dogi may work without apt-cacher
+			}
+
 		}
 
 		if constate.exists {
 			logger.Printf("container exists, removing...")
 			_, err := exec.Command("docker", "container",
 				"rm", contName).Output()
-			check(err)
+			if err != nil {
+				return "" // dogi may work without apt-cacher
+			}
 		}
 	}
 
 	// find out apt-cacher ip
-	out, err := exec.Command("docker", "container",
-		"inspect", "-f", "{{ .NetworkSettings.IPAddress }}", contName).Output()
+	// is it possible to have multiple IPs for this container?
+	apt_cacher_ip_func := func() ([]byte, error) {
+		return exec.Command("docker", "container",
+			"inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", contName).Output()
+	}
+	out, err := apt_cacher_ip_func()
 	if err != nil {
 		logger.Printf("container %s not found, launching...", contName)
 		_, err = exec.Command("docker",
@@ -334,8 +375,7 @@ func setAptCacher() string {
 		logger.Printf("apt-cacher container started")
 		check(err)
 
-		out, err = exec.Command("docker", "container",
-			"inspect", "-f", "{{ .NetworkSettings.IPAddress }}", contName).Output()
+		out, err = apt_cacher_ip_func()
 		check(err)
 	}
 	ip := strings.TrimSpace(string(out[:]))
@@ -543,8 +583,12 @@ Examples:
 			bashCmdPath, err := exec.LookPath("bash")
 			check(err)
 
+			// if tempdir is not provided, use OS default
+			if tempDirPtr == "" {
+				tempDirPtr = os.TempDir()
+			}
+
 			// create xauth magic cookie file
-			//xauthfile, err := os.CreateTemp("", fmt.Sprintf(".%s*.xauth", appname))
 			xauthfile, err := os.CreateTemp(tempDirPtr, fmt.Sprintf(".%s*.xauth", appname))
 
 			check(err)
@@ -575,10 +619,6 @@ Examples:
 			logger.Printf("workdir: %s\n", workDirPtr)
 			mountStrs := []string{fmt.Sprintf("--volume=%s:%s", workDirPtr, workDirPtr)}
 
-			//cidFile := fmt.Sprintf("%s/.%s%v.cid", os.TempDir(), appname, rand.Int63())
-			if tempDirPtr == "" {
-				tempDirPtr = os.TempDir()
-			}
 			cidFile := fmt.Sprintf("%s/.%s%v.cid", tempDirPtr, appname, rand.Int63())
 			mountStrs = append(mountStrs, fmt.Sprintf("--cidfile=%s", cidFile))
 			mountStrs = append(mountStrs, fmt.Sprintf("--volume=%s:%s", cidFile, cidFileContainer))
@@ -637,12 +677,13 @@ Examples:
 			if !noNethostPtr {
 				logger.Println("adding --network=host")
 				dockerRunArgs = append(dockerRunArgs, "--network=host")
-				if pidIPCHostPtr {
-					// https://github.com/eProsima/Fast-DDS/issues/2956
-					logger.Println("adding --pid=host and --ipc=host")
-					dockerRunArgs = append(dockerRunArgs, "--pid=host")
-					dockerRunArgs = append(dockerRunArgs, "--ipc=host")
-				}
+			}
+
+			if !noPIDIPCHostPtr {
+				// useful for https://github.com/eProsima/Fast-DDS/issues/2956
+				logger.Println("adding --pid=host --ipc=host, to disable use --no-pid-ipc-host")
+				dockerRunArgs = append(dockerRunArgs, "--pid=host")
+				dockerRunArgs = append(dockerRunArgs, "--ipc=host")
 			}
 
 			if privilegedPtr {
@@ -669,16 +710,26 @@ Examples:
 
 			distro := imageDistro(imageName) // empty if not supported
 
-			if aptCacherSupported(distro) {
-				if !noCacherPtr {
-					logger.Println("using apt-cacher, disable it with --no-cacher")
+			if !disableCacherPtr {
+				if aptCacherSupported(distro) {
+					logger.Println("trying to set up apt-cacher (speeds up apt downloads)")
+					logger.Println("to disable apt-cacher, use --disable-apt-cacher")
 					file := setAptCacher()
-					addCopyToContainerFile(file, "/etc/apt/apt.conf.d/01proxy")
+					if file != "" {
+						addCopyToContainerFile(file, "/etc/apt/apt.conf.d/01proxy")
+					} else {
+						if !forceCacherPtr {
+							logger.Printf("WARN: setting up apt cacher failed, will not be used\n")
+						} else {
+							logger.Printf("Error: received --force-apt-cacher but setting atp-cacher failed\n")
+							syscall.Exit(1)
+						}
+					}
 				} else {
-					logger.Println("disabling apt-cacher (--no-cacher=ON)")
+					logger.Println("image is not apt-based, disabling apt-cacher")
 				}
 			} else {
-				logger.Println("image is not apt-based, disabling apt-cacher (--no-cacher=ON)")
+				logger.Println("disabling apt-cacher (received --disable-apt-cacher)")
 			}
 
 			// figure out the command to execute (image default or provided)
@@ -786,11 +837,8 @@ Examples:
 				check(err)
 				logger.Println("create user script:", createUserFile.Name())
 				{
-					//logger.Println(strconv.FormatBool(setupSudoPtr))
+
 					var setupSudo bool = true
-					if noSetupSudoPtr {
-						setupSudo = false
-					}
 
 					groupsCmd := userSingleton().createGroupsCmd()
 					err := template.Must(template.New("").Option("missingkey=error").Parse(assets.CreateUserTemplate)).Execute(createUserFile,
@@ -812,12 +860,14 @@ Examples:
 				entrypoint = merge([]string{"bash", createUserScriptPath}, execCommand)
 			}
 
-			if othPtr != "" {
-				// add final custom commands.
-				outStr := strings.Split(othPtr, " ")
-				for _, elmt := range outStr {
-					dockerRunArgs = append(dockerRunArgs, elmt)
+			if extraArgsPtr != "" {
+				outStr, err := shell.Fields(extraArgsPtr, nil)
+				check(err)
+				logger.Println("found --extra-args:")
+				for _, arg := range outStr {
+					logger.Printf("  %s\n", arg)
 				}
+				dockerRunArgs = append(dockerRunArgs, outStr...)
 			}
 
 			dockerRunArgs = append(dockerRunArgs, imageName)
@@ -870,15 +920,17 @@ func init() {
 	runCmd.Flags().StringVar(&contNamePtr, "name", "", "change the container name")
 	runCmd.Flags().StringVar(&workDirPtr, "workdir", "", "working directory when launching the container, will be mounted inside")
 	runCmd.Flags().BoolVar(&privilegedPtr, "privileged", false, "add --privileged to docker run command")
-	runCmd.Flags().BoolVar(&noCacherPtr, "no-cacher", false, "don't launch apt-cacher container")
+	runCmd.Flags().BoolVar(&disableCacherPtr, "disable-apt-cacher", true, "completely disable apt-cacher (apt downloads accelerator)")
+	runCmd.Flags().BoolVar(&forceCacherPtr, "force-apt-cacher", false, "force using apt-cacher (apt downloads accelerator), exit on failure to set up")
+	runCmd.MarkFlagsMutuallyExclusive("disable-apt-cacher", "force-apt-cacher")
+
 	runCmd.Flags().BoolVar(&noRMPtr, "no-rm", false, "don't launch with --rm (container will exist after exiting)")
 	runCmd.Flags().BoolVar(&noUSBPtr, "no-usb", false, "don't mount usb devices")
 	runCmd.Flags().BoolVar(&noNethostPtr, "no-nethost", false, "don't launch with --network=host")
-	runCmd.Flags().StringVar(&othPtr, "other", "", "add the following string to 'run' command.")
 	runCmd.Flags().StringVar(&devRMWPtr, "device-rmw", "", "add rmw rules to the following devices (as stated in https://stackoverflow.com/a/62758958). Format : <id_dev_a>;<id_dev_b>")
 	runCmd.Flags().StringVar(&devAccPtr, "device-access", "", "mount the following devices to container (through --device option). Format : <dev_name_a>;<dev_name_b>")
-	runCmd.Flags().BoolVar(&noSetupSudoPtr, "no-setup-sudo", false, "install inside containers various basic packages, such as apt-utils, sudo, tzdata, vim, or bash-completion.")
 	runCmd.Flags().StringVar(&tempDirPtr, "temp-dir", "", "temporary directory to use for dogi (default: $TMPDIR or /tmp, through empty command). Can be modified if there are access issues with this particular folder.")
-	runCmd.Flags().BoolVar(&pidIPCHostPtr, "pidipc-host", true, "add --pid=host (PID of the container) and --ipc=host (Memory Access) to docker run command. Automatically activated with --network=host. Although it removes a security layer, it is notably necessary to let ROS containers communicates between them in --network=host mode.")
+	runCmd.Flags().StringVar(&extraArgsPtr, "extra-args", "", "pass unmodified arguments directly to docker create.")
+	runCmd.Flags().BoolVar(&noPIDIPCHostPtr, "no-pid-ipc-host", false, "don't launch with --pid=host --ipc=host.")
 
 }
