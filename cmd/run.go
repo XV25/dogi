@@ -837,11 +837,8 @@ Examples:
 				check(err)
 				logger.Println("create user script:", createUserFile.Name())
 				{
-					//logger.Println(strconv.FormatBool(setupSudoPtr))
+
 					var setupSudo bool = true
-					if noSetupSudoPtr {
-						setupSudo = false
-					}
 
 					groupsCmd := userSingleton().createGroupsCmd()
 					err := template.Must(template.New("").Option("missingkey=error").Parse(assets.CreateUserTemplate)).Execute(createUserFile,
@@ -923,7 +920,7 @@ func init() {
 	runCmd.Flags().StringVar(&contNamePtr, "name", "", "change the container name")
 	runCmd.Flags().StringVar(&workDirPtr, "workdir", "", "working directory when launching the container, will be mounted inside")
 	runCmd.Flags().BoolVar(&privilegedPtr, "privileged", false, "add --privileged to docker run command")
-	runCmd.Flags().BoolVar(&disableCacherPtr, "disable-apt-cacher", false, "completely disable apt-cacher (apt downloads accelerator)")
+	runCmd.Flags().BoolVar(&disableCacherPtr, "disable-apt-cacher", true, "completely disable apt-cacher (apt downloads accelerator)")
 	runCmd.Flags().BoolVar(&forceCacherPtr, "force-apt-cacher", false, "force using apt-cacher (apt downloads accelerator), exit on failure to set up")
 	runCmd.MarkFlagsMutuallyExclusive("disable-apt-cacher", "force-apt-cacher")
 
